@@ -1,7 +1,8 @@
 """zscaler_fix - trust the corporate Zscaler TLS-inspecting proxy CA in Python.
 
-**Development-only.** Do not add this as a runtime dependency of anything
-that gets deployed - see "Why this must stay dev-only" below.
+**Must never reach production.** See "Why this must never reach
+production" below, and in particular: do not depend on this from a `dev`
+dependency group - see the README's Usage section for why.
 
 ## The problem
 
@@ -39,13 +40,16 @@ it built its context - so that, right before each handshake:
 Both steps only happen if the CA actually loads; a context that can't be
 prepared is left completely untouched.
 
-## Why this must stay dev-only
+## Why this must never reach production
 
 Clearing ``VERIFY_X509_STRICT`` weakens certificate validation for *every*
 TLS connection the process makes, not just ones Zscaler intercepts -
 production workloads are usually not behind Zscaler at all, so this has
-pure downside there. Depend on this package only from a dev/test dependency
-group, never from your project's runtime dependencies.
+pure downside there. Depend on this package only from a dedicated,
+non-default dependency group (e.g. `zscaler`) - **not** `dev`, which uv
+syncs by default and which the `gds-idea-app-kit` web templates install in
+a Docker stage that production is built from. See the README's Usage
+section for the full explanation.
 
 ## Why this does NOT use `truststore` / `pip-system-certs`
 
