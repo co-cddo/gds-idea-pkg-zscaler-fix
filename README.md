@@ -182,6 +182,35 @@ uv pip list | grep -i zscaler   # should print nothing, after a bare `uv sync`
 - `uv` itself - has its own Rust TLS stack; use `SSL_CERT_FILE` or
   `--native-tls` if it needs to reach an intercepted host.
 
+## Is anything besides Python affected?
+
+Mostly no. Almost all developer tooling endpoints are on Zscaler's bypass
+list - measured from a managed device:
+
+| Clean | Intercepted |
+|---|---|
+| PyPI, all GitHub hosts, ghcr.io, Docker Hub, quay.io, `auth.docker.io`, npm registry, Terraform registry, HashiCorp releases, HuggingFace, Bedrock, Anthropic API, regional `*.amazonaws.com` | `public.ecr.aws`, general web browsing, `*.on.aws` (e.g. OpenSearch Serverless) |
+
+So npm, Terraform, `uv`/`pip`, and `docker pull` from Hub/ghcr/quay are all
+unaffected. The two non-Python cases that do break:
+
+- **`docker pull` from `public.ecr.aws`** - fix the Docker VM's trust
+  store, not the container's (e.g. a Colima `provision:` block that
+  installs the CA and runs `update-ca-certificates`).
+- **`curl`/`git`/`apt` inside a container** hitting an intercepted host -
+  `ADD` the CA into `/usr/local/share/ca-certificates/` and `RUN
+  update-ca-certificates` in that Dockerfile.
+
+To check any host yourself:
+
+```bash
+echo | openssl s_client -connect HOST:443 -servername HOST 2>/dev/null \
+  | openssl x509 -noout -issuer
+```
+
+Zscaler as the issuer means it's intercepted. This is a point-in-time
+measurement from one machine - ICS can change the bypass list.
+
 ## Why your error (or lack of one) might differ from a colleague's
 
 Two independent things determine what happens, and both vary by machine -
@@ -229,14 +258,30 @@ A [scheduled workflow](.github/workflows/cert-drift.yml) checks weekly
 whether alphagov's copy has changed, so we get their maintenance without
 the runtime coupling.
 
-**This doesn't use `truststore` / `pip-system-certs`.** Those repoint
-Python's validator at the OS-native trust store wholesale. On macOS that
-routes verification through Apple's stricter validator for **every**
-connection, including ones that never touch Zscaler - which in practice
-broke an otherwise-valid, unrelated AWS certificate reached over an SSH
-tunnel. This package only ever *adds* a CA and relaxes one specific check;
-it never replaces the validator, so anything that already verified
-successfully continues to.
+**This doesn't use `truststore` / `pip-system-certs` - though they do work
+locally.** On macOS, `pip-system-certs` fixes this on both Python 3.12 and
+3.13 (tested directly against a live intercepted endpoint). It works by
+calling `truststore.inject_into_ssl()`, which routes verification through
+Apple's `Security.framework` instead of OpenSSL - so OpenSSL's strict
+check never gets a chance to apply.
+
+Two reasons this package doesn't do the same thing:
+
+1. **It can't work in Linux containers.** There's no keychain to read,
+   and on Python 3.13+ the strict check rejects the CA even when it *is*
+   installed in the container's own OS trust store (tested).
+2. **Swapping the validator has broken a real connection.** Apple's
+   validator is stricter than OpenSSL about some certificate formatting,
+   and rejected a legitimate AWS wildcard certificate reached over an SSH
+   tunnel - breaking a previously-working Neptune connection in another
+   GDS IDEA project. This package only ever *adds* a CA and relaxes one
+   specific check; it never replaces the validator, so anything that
+   already verified successfully continues to.
+
+If you only work locally on macOS with no tunnel-style connections,
+`pip-system-certs` is a reasonable alternative on its own. This package
+exists because it also covers containers, with one approach that behaves
+the same way everywhere.
 
 ## Developing this package
 
