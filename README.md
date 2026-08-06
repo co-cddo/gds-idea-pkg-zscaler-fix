@@ -1,6 +1,163 @@
 # gds-idea-pkg-zscaler-fix
 
-_Brief description of your package._
+Fixes Python HTTPS failing behind the corporate Zscaler TLS-inspecting
+proxy. **Development-only** - see [Why this must stay dev-only](#why-this-must-stay-dev-only).
+
+## The problem
+
+On a Zscaler-managed device, outbound HTTPS is intercepted and re-signed
+with Zscaler's own root CA. The OS trusts that CA (via MDM), so `curl`,
+`apt`, and browsers work fine - but Python's HTTP clients don't consult the
+OS trust store the same way:
+
+- `urllib`/`ssl` use the OS store, but Python 3.13+ enables strict X.509
+  validation by default, which **rejects Zscaler's root CA** because its
+  `basicConstraints` extension isn't marked critical.
+- `requests`/`urllib3` don't use the OS store at all - they ship their own
+  bundle (`certifi`), and apply the same strict check themselves,
+  independent of Python version.
+
+Either way: `CERTIFICATE_VERIFY_FAILED`, or if you've already tried adding
+the cert the obvious way, `Basic Constraints of CA cert not marked
+critical`.
+
+## Why your error (or lack of one) might differ from a colleague's
+
+Two independent things determine what happens, and both vary by machine:
+
+1. **Is the Zscaler CA already trusted by the OS default bundle Python
+   loads?** This depends on which Python *distribution* you're running,
+   not the version - `uv`-managed installs typically point at macOS's own
+   ~128-cert bundle, which doesn't include it. Homebrew's Python links
+   Homebrew's own OpenSSL bundle, which on some machines does include
+   corporate CAs pushed by MDM into a Homebrew-managed cert store. `system
+   python3` may differ again.
+2. **Is strict X.509 validation on?** Only Python 3.13+ turns this on by
+   default for `create_default_context()`. `requests`/`urllib3` apply it
+   themselves regardless of Python version.
+
+| CA trusted? | Strict validation on? | What you see |
+|---|---|---|
+| No | No | `unable to get local issuer certificate` |
+| No | Yes | `unable to get local issuer certificate` |
+| Yes | No | Works fine - no error at all |
+| Yes | Yes | `Basic Constraints of CA cert not marked critical` |
+
+So "it works on my machine" and "it's completely broken on mine" can both
+be true for two people on the same network running different Python
+installs, or the same install with different Python versions. This
+package fixes all four combinations - it doesn't matter which one you're
+in.
+
+To check your own environment:
+
+```bash
+uv run python -c "
+import ssl
+ctx = ssl.create_default_context()
+cns = [dict(kv for rdn in c['subject'] for kv in rdn).get('commonName') for c in ctx.get_ca_certs()]
+print('Zscaler already trusted:', any('Zscaler' in (cn or '') for cn in cns))
+print('Strict validation on   :', bool(ctx.verify_flags & ssl.VERIFY_X509_STRICT))
+"
+```
+
+## Usage
+
+```bash
+uv add --group dev gds-idea-pkg-zscaler-fix --index gds-idea=https://co-cddo.github.io/gds-idea-pypi/simple/
+```
+
+That's it. A `.pth` file activates the fix automatically on interpreter
+startup, in every process - no code changes required. To disable at
+runtime (e.g. while debugging an unrelated TLS issue):
+
+```bash
+export ZSCALER_FIX_DISABLE=1
+```
+
+## Trying it out / confirming it fixes your problem
+
+`public.ecr.aws` is a real, currently-Zscaler-intercepted endpoint (unlike
+most AWS domains, which usually aren't), so it's a reliable way to
+reproduce the failure and confirm the fix without needing your own broken
+app running.
+
+Run this from a plain directory with no `pyproject.toml` of its own (e.g.
+`cd ~` first) - `uv run` auto-installs whatever project you're standing
+inside as part of its own environment, which would install this very
+package and make the "before" step pass when it shouldn't:
+
+```bash
+cd ~
+
+# 1. Confirm the failure exists on your machine right now
+uv run --with requests python -c "
+import requests
+requests.get('https://public.ecr.aws', timeout=10)
+"
+# Expect: requests.exceptions.SSLError (or CERTIFICATE_VERIFY_FAILED)
+
+# 2. Now with the fix installed - same command, one extra --with
+uv run --with requests \
+  --with gds-idea-pkg-zscaler-fix \
+  --index gds-idea=https://co-cddo.github.io/gds-idea-pypi/simple/ \
+  python -c "
+import requests
+r = requests.get('https://public.ecr.aws', timeout=10)
+print('SUCCESS:', r.status_code)
+"
+# Expect: SUCCESS 200
+```
+
+No project setup needed for this - `uv run --with` installs both packages
+into a throwaway environment just for that one command. If step 1 doesn't
+fail for you, you're one of the lucky "CA already trusted, strict
+off" combinations above and don't have this problem to begin with; if it
+fails with something other than an SSL/certificate error, that's a
+different problem (check you're actually on the Zscaler-managed network).
+
+## Why this must stay dev-only
+
+The fix works by clearing `ssl.VERIFY_X509_STRICT`, which weakens
+certificate validation for **every** TLS connection the process makes, not
+just ones Zscaler intercepts. Production workloads are usually not behind
+Zscaler at all, so this has pure downside there - install it only via a
+dev/test dependency group, never as a runtime dependency.
+
+## What this does NOT fix
+
+- `curl`, `apt`, `git` - these need the CA in the OS/container trust store
+  instead (`ADD` the cert + `update-ca-certificates` in your Dockerfile).
+- `grpcio` - bundles its own BoringSSL; needs `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH`.
+- `psycopg`/`libpq` - has its own TLS handling for Postgres connections.
+- `uv` itself - has its own Rust TLS stack; use `SSL_CERT_FILE` or
+  `--native-tls` if it needs to reach an intercepted host.
+
+## Why the cert is vendored, not fetched at runtime
+
+The certificate in `src/zscaler_fix/zscaler-root-ca.pem` is vendored from
+[alphagov/govuk-infrastructure](https://github.com/alphagov/govuk-infrastructure/blob/main/cacerts/zscaler-root-ca.pem)
+rather than downloaded on every process start:
+
+- Fetching a trust anchor over the network at runtime is a bootstrap
+  problem - you'd need working TLS to fetch the fix for TLS.
+- It would mean anyone who can tamper with that URL or the connection to
+  it could install an arbitrary root CA into every process using this
+  package.
+
+A [scheduled workflow](.github/workflows/cert-drift.yml) checks weekly
+whether alphagov's copy has changed, so we get their maintenance without
+the runtime coupling.
+
+## Why this doesn't use `truststore` / `pip-system-certs`
+
+Those repoint Python's validator at the OS-native trust store wholesale.
+On macOS that routes verification through Apple's stricter validator for
+**every** connection, including ones that never touch Zscaler - which in
+practice broke an otherwise-valid, unrelated AWS certificate reached over
+an SSH tunnel. This package only ever *adds* a CA and relaxes one specific
+check; it never replaces the validator, so anything that already verified
+successfully continues to.
 
 ## Prerequisites
 
