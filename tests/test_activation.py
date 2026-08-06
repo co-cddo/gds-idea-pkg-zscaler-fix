@@ -79,13 +79,15 @@ class TestPrepareContext:
     def test_clears_strict_flag(self):
         import ssl
 
-        # Note: only ssl.create_default_context() sets VERIFY_X509_STRICT by
-        # default (on Python 3.13+) - a bare ssl.SSLContext(...) does not.
-        # requests/urllib3 build their own context and set the flag
-        # themselves, independent of this default; create_default_context()
-        # is enough to exercise the same code path this function must fix.
+        # Note: VERIFY_X509_STRICT is only on by default since Python
+        # 3.13 - a bare ssl.SSLContext(...) never sets it, and older
+        # create_default_context() doesn't either. requests/urllib3 set
+        # the flag themselves regardless of Python version, independent
+        # of this default; create_default_context() is enough to exercise
+        # the same code path this function must fix.
         context = ssl.create_default_context()
-        assert context.verify_flags & ssl.VERIFY_X509_STRICT  # sanity: on by default (3.13+)
+        if sys.version_info >= (3, 13):
+            assert context.verify_flags & ssl.VERIFY_X509_STRICT  # sanity: on by default (3.13+)
 
         zscaler_fix._prepare_context(context)
 
@@ -100,7 +102,12 @@ class TestPrepareContext:
         zscaler_fix._prepare_context(context)
 
         certs_after = context.get_ca_certs()
-        assert len(certs_after) == certs_before + 1
+        # Additive, never destructive - the exact delta isn't portable: on
+        # some platforms/Python versions (observed on 3.14 on a
+        # Zscaler-managed Mac) the OS default cert enumeration already
+        # includes the Zscaler CA (pushed via MDM into the System
+        # keychain), so adding it again is a no-op rather than +1.
+        assert len(certs_after) >= certs_before
 
         common_names = [dict(kv for rdn in cert["subject"] for kv in rdn).get("commonName") for cert in certs_after]
         assert "Zscaler Root CA" in common_names
@@ -137,10 +144,14 @@ class TestPrepareContext:
 
         monkeypatch.setattr(zscaler_fix._ca, "load_cert_pem", _raise)
         context = ssl.create_default_context()
+        flags_before = context.verify_flags
 
         zscaler_fix._prepare_context(context)  # must not raise
-        # Nothing should have changed since the CA never loaded.
-        assert context.verify_flags & ssl.VERIFY_X509_STRICT
+
+        # Nothing should have changed since the CA never loaded (compared
+        # against the actual starting state, since the default verify_flags
+        # value itself differs by Python version - see test_clears_strict_flag).
+        assert context.verify_flags == flags_before
 
 
 class TestDisableEnvVar:
