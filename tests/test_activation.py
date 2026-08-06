@@ -102,11 +102,16 @@ class TestPrepareContext:
         zscaler_fix._prepare_context(context)
 
         certs_after = context.get_ca_certs()
-        # Additive, never destructive - the exact delta isn't portable: on
-        # some platforms/Python versions (observed on 3.14 on a
-        # Zscaler-managed Mac) the OS default cert enumeration already
-        # includes the Zscaler CA (pushed via MDM into the System
-        # keychain), so adding it again is a no-op rather than +1.
+        # Additive, never destructive - the exact delta isn't portable. The
+        # OS default cert bundle depends on which OpenSSL a given Python
+        # *distribution* links against, not the language version: on one
+        # test machine, Homebrew's Python 3.14 linked Homebrew's OpenSSL
+        # bundle (195 certs, already including a corporate CA pushed by
+        # MDM into a Homebrew-managed store), while uv-managed 3.11/3.12/
+        # 3.13 builds all pointed at macOS's own 128-cert bundle, which did
+        # not include it. So the CA can already be present before this
+        # function runs, in which case adding it again is a no-op rather
+        # than +1 - hence checking >= and presence, not a fixed delta.
         assert len(certs_after) >= certs_before
 
         common_names = [dict(kv for rdn in cert["subject"] for kv in rdn).get("commonName") for cert in certs_after]

@@ -21,6 +21,46 @@ Either way: `CERTIFICATE_VERIFY_FAILED`, or if you've already tried adding
 the cert the obvious way, `Basic Constraints of CA cert not marked
 critical`.
 
+## Why your error (or lack of one) might differ from a colleague's
+
+Two independent things determine what happens, and both vary by machine:
+
+1. **Is the Zscaler CA already trusted by the OS default bundle Python
+   loads?** This depends on which Python *distribution* you're running,
+   not the version - `uv`-managed installs typically point at macOS's own
+   ~128-cert bundle, which doesn't include it. Homebrew's Python links
+   Homebrew's own OpenSSL bundle, which on some machines does include
+   corporate CAs pushed by MDM into a Homebrew-managed cert store. `system
+   python3` may differ again.
+2. **Is strict X.509 validation on?** Only Python 3.13+ turns this on by
+   default for `create_default_context()`. `requests`/`urllib3` apply it
+   themselves regardless of Python version.
+
+| CA trusted? | Strict validation on? | What you see |
+|---|---|---|
+| No | No | `unable to get local issuer certificate` |
+| No | Yes | `unable to get local issuer certificate` |
+| Yes | No | Works fine - no error at all |
+| Yes | Yes | `Basic Constraints of CA cert not marked critical` |
+
+So "it works on my machine" and "it's completely broken on mine" can both
+be true for two people on the same network running different Python
+installs, or the same install with different Python versions. This
+package fixes all four combinations - it doesn't matter which one you're
+in.
+
+To check your own environment:
+
+```bash
+uv run python -c "
+import ssl
+ctx = ssl.create_default_context()
+cns = [dict(kv for rdn in c['subject'] for kv in rdn).get('commonName') for c in ctx.get_ca_certs()]
+print('Zscaler already trusted:', any('Zscaler' in (cn or '') for cn in cns))
+print('Strict validation on   :', bool(ctx.verify_flags & ssl.VERIFY_X509_STRICT))
+"
+```
+
 ## Usage
 
 ```bash
@@ -34,6 +74,47 @@ runtime (e.g. while debugging an unrelated TLS issue):
 ```bash
 export ZSCALER_FIX_DISABLE=1
 ```
+
+## Trying it out / confirming it fixes your problem
+
+`public.ecr.aws` is a real, currently-Zscaler-intercepted endpoint (unlike
+most AWS domains, which usually aren't), so it's a reliable way to
+reproduce the failure and confirm the fix without needing your own broken
+app running.
+
+Run this from a plain directory with no `pyproject.toml` of its own (e.g.
+`cd ~` first) - `uv run` auto-installs whatever project you're standing
+inside as part of its own environment, which would install this very
+package and make the "before" step pass when it shouldn't:
+
+```bash
+cd ~
+
+# 1. Confirm the failure exists on your machine right now
+uv run --with requests python -c "
+import requests
+requests.get('https://public.ecr.aws', timeout=10)
+"
+# Expect: requests.exceptions.SSLError (or CERTIFICATE_VERIFY_FAILED)
+
+# 2. Now with the fix installed - same command, one extra --with
+uv run --with requests \
+  --with gds-idea-pkg-zscaler-fix \
+  --index gds-idea=https://co-cddo.github.io/gds-idea-pypi/simple/ \
+  python -c "
+import requests
+r = requests.get('https://public.ecr.aws', timeout=10)
+print('SUCCESS:', r.status_code)
+"
+# Expect: SUCCESS 200
+```
+
+No project setup needed for this - `uv run --with` installs both packages
+into a throwaway environment just for that one command. If step 1 doesn't
+fail for you, you're one of the lucky "CA already trusted, strict
+off" combinations above and don't have this problem to begin with; if it
+fails with something other than an SSL/certificate error, that's a
+different problem (check you're actually on the Zscaler-managed network).
 
 ## Why this must stay dev-only
 
