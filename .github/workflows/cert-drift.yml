@@ -1,0 +1,39 @@
+name: Cert drift check
+
+# Weekly check that our vendored Zscaler root CA (src/zscaler_fix/zscaler-root-ca.pem)
+# still matches alphagov/govuk-infrastructure's copy, which we deliberately
+# vendor from rather than fetch at runtime (see src/zscaler_fix/_ca.py).
+# This gives us the benefit of their maintenance (they've committed to
+# updating it if Zscaler/ICS ever rotates the CA) without any runtime
+# network dependency.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # every Monday, 06:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  check-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare vendored cert against alphagov/govuk-infrastructure
+        run: |
+          set -euo pipefail
+
+          curl -fsSL -o /tmp/upstream.pem \
+            https://raw.githubusercontent.com/alphagov/govuk-infrastructure/main/cacerts/zscaler-root-ca.pem
+
+          ours=$(openssl x509 -in src/zscaler_fix/zscaler-root-ca.pem -noout -fingerprint -sha256)
+          theirs=$(openssl x509 -in /tmp/upstream.pem -noout -fingerprint -sha256)
+
+          echo "Vendored: $ours"
+          echo "Upstream: $theirs"
+
+          if [ "$ours" != "$theirs" ]; then
+            echo "::error::Vendored Zscaler CA cert has drifted from alphagov/govuk-infrastructure's copy. Update src/zscaler_fix/zscaler-root-ca.pem, recompute the pinned fingerprint in tests/test_ca.py, and bump the version."
+            exit 1
+          fi
+
+          echo "No drift detected."

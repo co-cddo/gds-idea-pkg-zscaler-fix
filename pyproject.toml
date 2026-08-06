@@ -1,6 +1,6 @@
 [project]
 name = "gds-idea-pkg-zscaler-fix"
-description = "TODO: add description"
+description = "Dev-only fix for Python HTTPS failing behind the corporate Zscaler TLS-inspecting proxy"
 readme = "README.md"
 authors = [
     { name = "David Gillespie", email = "david.gillespie@digital.cabinet-office.gov.uk" }
@@ -22,6 +22,10 @@ version-file = "src/zscaler_fix/_version.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/zscaler_fix"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/zscaler_fix.pth" = "zscaler_fix.pth"
+"src/zscaler_fix/zscaler-root-ca.pem" = "zscaler_fix/zscaler-root-ca.pem"
+
 [tool.ruff]
 line-length = 120
 target-version = "py313"
@@ -36,7 +40,10 @@ known-first-party = ["zscaler_fix"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
-markers = ["integration: tests that require external services"]
+markers = [
+    "integration: tests that require external services",
+    "asyncio: run an async test under pytest-asyncio (only used within integration tests, which require the integration-test dependency group)",
+]
 
 [tool.gds-idea-app-kit]
 framework = "python"
@@ -55,4 +62,10 @@ dev = [
     "pre-commit>=4.6.1",
     "pytest>=9.0.0",
     "ruff>=0.14.0",
+]
+integration-test = [
+    "requests>=2.32.0",
+    "httpx>=0.28.0",
+    "boto3>=1.43.0",
+    "pytest-asyncio>=0.25.0",
 ]
