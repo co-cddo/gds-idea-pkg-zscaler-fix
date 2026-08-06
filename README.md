@@ -1,7 +1,8 @@
 # gds-idea-pkg-zscaler-fix
 
 Fixes Python HTTPS failing behind the corporate Zscaler TLS-inspecting
-proxy. **Development-only** - see [Why this must stay dev-only](#why-this-must-stay-dev-only).
+proxy. **Must never reach production** - see [Why this must never reach
+production](#why-this-must-never-reach-production).
 
 ## The problem
 
@@ -63,17 +64,74 @@ print('Strict validation on   :', bool(ctx.verify_flags & ssl.VERIFY_X509_STRICT
 
 ## Usage
 
+**Do not add this to the `dev` group.** uv's `default-groups` setting
+defaults to `["dev"]`, so `dev` gets installed by a plain `uv sync` -
+and the `gds-idea-app-kit` web templates run a bare `uv sync` in their
+`base` Docker stage, which `production` is built `FROM`. Anything in
+`dev` ships to production.
+
+Use a dedicated group instead - `zscaler` by convention:
+
 ```bash
-uv add --group dev gds-idea-pkg-zscaler-fix --index gds-idea=https://co-cddo.github.io/gds-idea-pypi/simple/
+uv add --group zscaler gds-idea-pkg-zscaler-fix \
+  --index gds-idea=https://co-cddo.github.io/gds-idea-pypi/simple/
 ```
 
-That's it. A `.pth` file activates the fix automatically on interpreter
-startup, in every process - no code changes required. To disable at
-runtime (e.g. while debugging an unrelated TLS issue):
+`uv add --group <name>` installs immediately (verified - it's not just a
+`pyproject.toml`/lockfile edit), so no separate `uv sync` step is needed
+right after adding it.
+
+**One wrinkle:** a later bare `uv sync` performs an *exact* sync and will
+uninstall it again, since `zscaler` isn't a default group (verified). If
+that happens you'll just see the original SSL error return - re-run:
+
+```bash
+uv sync --group zscaler
+```
+
+`uv run` (as opposed to `uv sync`) does an *inexact* sync by default and
+won't remove it, so this mostly only bites after an explicit `uv sync`.
+
+Once installed, a `.pth` file activates the fix automatically on
+interpreter startup, in every process using that environment - no code
+changes required. To disable at runtime (e.g. while debugging an unrelated
+TLS issue):
 
 ```bash
 export ZSCALER_FIX_DISABLE=1
 ```
+
+## Common scenarios
+
+**In a uv project:** as above - `uv add --group zscaler ...`.
+
+**A standalone script, no project:**
+
+```bash
+uv run --with gds-idea-pkg-zscaler-fix \
+  --index gds-idea=https://co-cddo.github.io/gds-idea-pypi/simple/ \
+  python your_script.py
+```
+
+or add it to the script's own PEP 723 inline metadata with `uv add
+--script your_script.py --group zscaler ...`.
+
+**A `gds-idea-app-kit` dev container:**
+
+```bash
+uv add --group zscaler gds-idea-pkg-zscaler-fix \
+  --index gds-idea=https://co-cddo.github.io/gds-idea-pypi/simple/
+```
+
+in `app_src/`, then add `RUN uv sync --group zscaler` to the
+**`development`** stage of `app_src/Dockerfile` (after `USER $USERNAME`) -
+**not** the shared `base` stage.
+
+`app_src/Dockerfile` is a tool-managed file (tracked in the
+`[tool.gds-idea-app-kit.files]` manifest). Editing it means every future
+`idea-app update` will skip it and write `app_src/Dockerfile.new` next to
+it for manual merging, indefinitely. That's expected, not a bug - just
+budget for it each time you update `gds-idea-app-kit`.
 
 ## Trying it out / confirming it fixes your problem
 
@@ -116,13 +174,23 @@ off" combinations above and don't have this problem to begin with; if it
 fails with something other than an SSL/certificate error, that's a
 different problem (check you're actually on the Zscaler-managed network).
 
-## Why this must stay dev-only
+## Why this must never reach production
 
 The fix works by clearing `ssl.VERIFY_X509_STRICT`, which weakens
 certificate validation for **every** TLS connection the process makes, not
 just ones Zscaler intercepts. Production workloads are usually not behind
-Zscaler at all, so this has pure downside there - install it only via a
-dev/test dependency group, never as a runtime dependency.
+Zscaler at all, so this has pure downside there.
+
+"Install it via a dev dependency group" isn't sufficient advice on its
+own - see [Usage](#usage) above for why the `dev` group specifically must
+be avoided in this org's Docker templates, and use a dedicated group
+(`zscaler`) instead.
+
+To verify it hasn't leaked into a production build:
+
+```bash
+uv pip list | grep -i zscaler   # should print nothing, after a bare `uv sync`
+```
 
 ## What this does NOT fix
 
