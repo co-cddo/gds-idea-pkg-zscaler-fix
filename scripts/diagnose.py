@@ -6,16 +6,28 @@ Zero required dependencies for the baseline checks (stdlib only). Pass
 library has different trust-store behaviour, and this reports on whichever
 are actually importable rather than requiring all of them.
 
-Usage:
-    uv run scripts/diagnose.py
-    uv run --with httpx --with requests scripts/diagnose.py
+Run it via the raw URL, not a local checkout -- IMPORTANT:
+
+    uv run --with httpx --with requests \\
+        https://raw.githubusercontent.com/co-cddo/gds-idea-pkg-zscaler-fix/main/scripts/diagnose.py
+
+`uv run` auto-installs whatever project it finds above the current
+directory. Running `scripts/diagnose.py` by a relative/absolute path from
+inside a clone of *this* repo installs zscaler_fix itself as a side
+effect (it's the project you're standing in) -- `--isolated`/`--no-project`
+do not prevent this for a script path under a project directory, only the
+URL form does. That would silently show "zscaler_fix: installed" for
+someone who never intentionally installed it, defeating the point of a
+clean diagnostic. Verified: running the identical script via URL from an
+unrelated directory correctly reports "not installed".
 
 To compare across Python versions (isolates whether strict X.509
 validation, which only defaults to on for 3.13+, is the deciding factor):
 
     for v in 3.11 3.12 3.13; do
         echo "=== Python $v ==="
-        uv run --python "$v" --with httpx --with requests scripts/diagnose.py
+        uv run --python "$v" --with httpx --with requests \\
+            https://raw.githubusercontent.com/co-cddo/gds-idea-pkg-zscaler-fix/main/scripts/diagnose.py
     done
 
 Copy the full output and send it to whoever's trying to help diagnose the

@@ -33,11 +33,20 @@ print('Strict validation on   :', bool(ctx.verify_flags & ssl.VERIFY_X509_STRICT
 For the fuller picture -- live connection tests against known clean and
 known intercepted hosts, across `urllib`/`httpx`/`requests`, plus whether
 `zscaler_fix` is already active -- run
-[`scripts/diagnose.py`](scripts/diagnose.py):
+[`scripts/diagnose.py`](scripts/diagnose.py) **via its raw URL, not a
+local checkout**:
 
 ```bash
-uv run --with httpx --with requests scripts/diagnose.py
+uv run --with httpx --with requests \
+    https://raw.githubusercontent.com/co-cddo/gds-idea-pkg-zscaler-fix/main/scripts/diagnose.py
 ```
+
+The URL form matters: `uv run` auto-installs whatever project it finds
+above the current directory, so running the same script by path from
+inside a clone of this repo installs `zscaler_fix` itself as a side
+effect - `--isolated`/`--no-project` don't prevent that for a script path
+under a project directory, only running via URL does, giving a genuinely
+clean result for someone who hasn't installed anything.
 
 Two people can get different results on the same network purely from
 which Python version they're on (3.13+ enables strict validation by
@@ -46,7 +55,8 @@ default) -- to check that specifically:
 ```bash
 for v in 3.11 3.12 3.13; do
     echo "=== Python $v ==="
-    uv run --python "$v" --with httpx --with requests scripts/diagnose.py
+    uv run --python "$v" --with httpx --with requests \
+        https://raw.githubusercontent.com/co-cddo/gds-idea-pkg-zscaler-fix/main/scripts/diagnose.py
 done
 ```
 
