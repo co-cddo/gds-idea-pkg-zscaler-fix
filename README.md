@@ -30,6 +30,26 @@ print('Strict validation on   :', bool(ctx.verify_flags & ssl.VERIFY_X509_STRICT
 "
 ```
 
+For the fuller picture -- live connection tests against known clean and
+known intercepted hosts, across `urllib`/`httpx`/`requests`, plus whether
+`zscaler_fix` is already active -- run
+[`scripts/diagnose.py`](scripts/diagnose.py):
+
+```bash
+uv run --with httpx --with requests scripts/diagnose.py
+```
+
+Two people can get different results on the same network purely from
+which Python version they're on (3.13+ enables strict validation by
+default) -- to check that specifically:
+
+```bash
+for v in 3.11 3.12 3.13; do
+    echo "=== Python $v ==="
+    uv run --python "$v" --with httpx --with requests scripts/diagnose.py
+done
+```
+
 If `Zscaler already trusted` is `False`, or it's `True` but `Strict
 validation on` is also `True`, you're affected. Two colleagues on the same
 network can get different answers here - see [Why your error might differ
