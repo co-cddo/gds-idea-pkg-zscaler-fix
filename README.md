@@ -47,9 +47,24 @@ uv add --group zscaler gds-idea-pkg-zscaler-fix \
 > the `dev` group by default, and that group can end up in production
 > Docker images - see [Why this must never reach
 > production](#why-this-must-never-reach-production). `zscaler` is just a
-> name; any group that isn't `dev` (or a default group) works.
+> name; any group that isn't `dev` works.
 
-That's it - installing it is the only step. A `.pth` file activates the
+A plain `uv sync` only keeps packages from the groups it selects, and removes
+everything else from the environment. So if you want the fix to survive a
+plain `uv sync` (for example in a dev container, or on your laptop), add the
+group to `default-groups` as well:
+
+```toml
+[tool.uv]
+default-groups = ["dev", "zscaler"]
+```
+
+**Only do this if every production build leaves default groups out**, for
+example `uv sync --no-default-groups` (or `--no-group zscaler`), and runs with
+`uv run --no-sync`. Otherwise keep `zscaler` out of `default-groups` and ask
+for it explicitly with `--group zscaler` wherever you need it.
+
+Installing it is the only step. A `.pth` file activates the
 fix automatically whenever Python starts, in every process using that
 environment. No code changes required.
 
@@ -138,20 +153,32 @@ or add it to the script's own PEP 723 inline metadata with `uv add
 
 **A `gds-idea-app-kit` dev container:**
 
+From `gds-idea-app-kit` 0.7.0, new projects already have this set up in both
+`app_src/pyproject.toml` and the root `pyproject.toml`: the `zscaler` group
+is a default group, the development image installs it with a plain
+`uv sync`, and the production image is built with
+`uv sync --no-default-groups` so it never contains it. There is nothing to
+do and no Dockerfile edit needed.
+
+For a project created before 0.7.0, run `idea-app update` (it prints these
+commands when they're needed), then run this in `app_src/` and in the
+repository root:
+
 ```bash
 uv add --group zscaler gds-idea-pkg-zscaler-fix \
   --index gds-idea=https://co-cddo.github.io/gds-idea-pypi/simple/
 ```
 
-in `app_src/`, then add `RUN uv sync --group zscaler` to the
-**`development`** stage of `app_src/Dockerfile` (after `USER $USERNAME`) -
-**not** the shared `base` stage.
+and add this to each `pyproject.toml`:
 
-`app_src/Dockerfile` is a tool-managed file (tracked in the
-`[tool.gds-idea-app-kit.files]` manifest). Editing it means every future
-`idea-app update` will skip it and write `app_src/Dockerfile.new` next to
-it for manual merging, indefinitely. That's expected, not a bug - just
-budget for it each time you update `gds-idea-app-kit`.
+```toml
+[tool.uv]
+default-groups = ["dev", "zscaler"]
+```
+
+Then rebuild the dev container. Don't install the fix with `uv pip install`
+in a Dockerfile: `uv sync` (including the dev container's
+`postCreateCommand`) removes any package that isn't in the lockfile.
 
 ## Why this must never reach production
 
@@ -162,15 +189,18 @@ Zscaler at all, so this has pure downside there.
 
 "Install it via a dev dependency group" isn't sufficient advice on its
 own: uv's `default-groups` setting defaults to `["dev"]`, so a plain `uv
-sync` installs whatever's in `dev` - and the `gds-idea-app-kit` web
-templates run a bare `uv sync` in their shared `base` Docker stage, which
-`production` is built `FROM`. Use a dedicated, non-default group (`zscaler`
-by convention) instead, as in [Quick start](#quick-start) above.
+sync` installs whatever's in `dev`, and a bare `uv sync` in a shared
+Docker `base` stage leaks it into `production`. (Older `gds-idea-app-kit`
+templates did exactly that.) Use a dedicated group (`zscaler` by
+convention), and make the production build opt out explicitly with
+`uv sync --no-default-groups`, as in [Quick start](#quick-start) above.
+Run production with `uv run --no-sync` so it never installs anything at
+start-up.
 
 To verify it hasn't leaked into a production build:
 
 ```bash
-uv pip list | grep -i zscaler   # should print nothing, after a bare `uv sync`
+uv pip list | grep -i zscaler   # should print nothing, after the production build's `uv sync`
 ```
 
 ## What this does NOT fix
